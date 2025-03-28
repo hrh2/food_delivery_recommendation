@@ -94,3 +94,5 @@ The API will be available at `http://localhost:8000/docs` for interactive testin
 ---
 This documentation will be updated as improvements are made to the model and API integration. 🚀
 
+---
+For the  fronted with Django Refer to [Food Delivery Management System](https://github.com/hrh2/food_delivery_management)
