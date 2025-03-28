@@ -6,6 +6,9 @@ from fastapi.openapi.utils import get_openapi
 import database, schemas
 import jwt
 from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+import joblib
 
 # Secret key for JWT encoding/decoding
 SECRET_KEY = "mysecretkey"  # Keep this secret!
@@ -93,27 +96,47 @@ def create_customer(customer: schemas.CustomerCreate, db: Session = Depends(get_
 
 # Endpoint to place an order (requires authentication)
 @app.post("/place_order/")
-def place_order(order: schemas.OrderCreate, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def place_order(
+    order: schemas.OrderCreate,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
     # Decode token and get the current user (customer)
     username = get_current_user(token)
     customer = db.query(database.Customer).filter(database.Customer.username == username).first()
 
     if not customer:
-        raise HTTPException(status_code=400, detail="Customer not found")
+        raise HTTPException(status_code=404, detail="Customer not found")
 
-    # Create a new order
-    db_order = database.Order(
-        customer_id=customer.id,  # Use customer.id from decoded token
-        menu_name=order.menu_name,
-        menu_details=order.menu_details,
-        price=order.price
-    )
+    try:
+        # Create a new order with a timestamp
+        db_order = database.Order(
+            customer_id=customer.id,
+            menu_name=order.menu_name,
+            menu_details=order.menu_details,
+            price=order.price,
+            date=datetime.utcnow()  # Automatically set current timestamp
+        )
 
-    db.add(db_order)
-    db.commit()
-    db.refresh(db_order)
+        db.add(db_order)
+        db.commit()
+        db.refresh(db_order)
 
-    return db_order
+        return {
+            "order_id": db_order.id,
+            "customer_id": db_order.customer_id,
+            "menu_name": db_order.menu_name,
+            "menu_details": db_order.menu_details,
+            "price": db_order.price,
+            "date": db_order.date
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Order placement failed: {str(e)}")
+
+    finally:
+        db.close()
 
 # Endpoint to get all orders
 @app.get("/get_orders/")
@@ -128,6 +151,49 @@ def get_all_customers(db: Session = Depends(get_db)):
     if not db_customers:
         raise HTTPException(status_code=404, detail="No customers found")
     return db_customers
+
+
+def recommend_menu(customer_id, date, location, top_n=3):
+    artifacts = joblib.load('ml_model/menu_recommender.joblib')
+    model = artifacts['model']
+    le = artifacts['label_encoders']
+
+    date = pd.to_datetime(date)
+    features = {
+        'month': date.month,
+        'day_of_week': date.dayofweek,
+        'is_weekend': int(date.dayofweek in [5, 6]),
+        'price_tier': 1,
+        'cust_order_freq': artifacts['cust_order_count'].get(customer_id, 1),
+        'loc_menu_count': artifacts['loc_menu_pop'].get((location, ''), 1),
+        'location': le['location'].transform([location])[0]
+    }
+
+    X = pd.DataFrame([features])
+    probs = model.predict_proba(X)[0]
+    top_indices = np.argsort(probs)[-top_n:][::-1]
+
+    recommendations = []
+    for idx in top_indices:
+        menu_id = model.classes_[idx]
+        menu_name = le['menu_name'].inverse_transform([menu_id])[0]
+        confidence = probs[idx] * 10
+        recommendations.append({"menu_name": menu_name, "confidence": float(confidence)})
+
+    return recommendations
+
+
+@app.post("/recommend")
+def get_recommendation(request: dict):
+    customer_id = request.get("customer_id")
+    date = request.get("date")
+    location = request.get("location")
+    if not all([customer_id, date, location]):
+        raise HTTPException(status_code=400, detail="Missing required parameters")
+
+    recommendations = recommend_menu(customer_id, date, location)
+    return {"recommended_menu": recommendations}
+
 
 # Custom OpenAPI Schema to modify Swagger UI
 def custom_openapi():
@@ -145,6 +211,7 @@ def custom_openapi():
         "bearerFormat": "JWT",
         "description": "Paste your token in the format 'Bearer <your-token>' to authenticate."
     }
+
     for path in openapi_schema["paths"].values():
         for method in path.values():
             if "security" in method:

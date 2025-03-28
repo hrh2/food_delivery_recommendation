@@ -1,5 +1,7 @@
+from datetime import datetime
+
 from sqlalchemy import (
-    create_engine, Column, Integer, String, ForeignKey, Float
+    create_engine, Column, Integer, String, ForeignKey, Float, DateTime
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -48,6 +50,7 @@ class Order(Base):
     menu_name = Column(String)
     menu_details = Column(String)
     price = Column(Float)
+    date = Column(DateTime, default=datetime.utcnow)  # New date column
 
     # Define the relationship with the Customer
     customer = relationship("Customer", back_populates="orders")

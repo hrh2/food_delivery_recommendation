@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 
 # Schema for creating users
 class UserCreate(BaseModel):
